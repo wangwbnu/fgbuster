@@ -243,11 +243,23 @@ def P(A, invN=None, return_svd=False):
         res = _P_svd(u_e_v)
     else:
         res = _mm(_P_svd(u_e_v), _T(L))
-        try:
-            res = sp.linalg.solve_triangular(L, res, lower=True,
-                                             overwrite_b=True, trans='T')
-        except np.linalg.LinAlgError:
-            return _mm(A, W(A, invN=invN))
+        if res.ndim > 2:
+            try:
+                dim = res.ndim - 2
+                for idx in np.ndindex(*res.shape[:dim]):
+                    res[idx] = sp.linalg.solve_triangular(L[idx], res[idx], lower=True,
+                                                overwrite_b=True, trans='T')
+            except np.linalg.LinAlgError:
+                dim = res.ndim - 2
+                for idx in np.ndindex(*res.shape[:dim]):
+                    res[idx] = - _mm(A[idx], W(A[idx], invN=invN[idx]))
+                return res
+        else:
+            try:
+                res = sp.linalg.solve_triangular(L, res, lower=True,
+                                                overwrite_b=True, trans='T')
+            except np.linalg.LinAlgError:
+                return _mm(A, W(A, invN=invN))
 
     if return_svd:
         return res, (u_e_v, L)
@@ -265,11 +277,23 @@ def D(A, invN=None, return_svd=False):
         res = _D_svd(u_e_v)
     else:
         res = _mm(_D_svd(u_e_v), _T(L))
-        try:
-            res = sp.linalg.solve_triangular(L, res, lower=True,
-                                             overwrite_b=True, trans='T')
-        except np.linalg.LinAlgError:
-            return np.eye(res.shape[-1]) - _mm(A, W(A, invN=invN))
+        if res.ndim > 2:
+            try:
+                dim = res.ndim - 2
+                for idx in np.ndindex(*res.shape[:dim]):
+                    res[idx] = sp.linalg.solve_triangular(L[idx], res[idx], lower=True,
+                                                overwrite_b=True, trans='T')
+            except np.linalg.LinAlgError:
+                dim = res.ndim - 2
+                for idx in np.ndindex(*res.shape[:dim]):
+                    res[idx] = np.eye(res.shape[-1]) - _mm(A[idx], W(A[idx], invN=invN[idx]))
+                return res
+        else:
+            try:
+                res = sp.linalg.solve_triangular(L, res, lower=True,
+                                                overwrite_b=True, trans='T')
+            except np.linalg.LinAlgError:
+                return np.eye(res.shape[-1]) - _mm(A, W(A, invN=invN))
     if return_svd:
         return res, (u_e_v, L)
     return res
