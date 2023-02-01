@@ -24,6 +24,8 @@ import pandas as pd
 import healpy as hp
 import pysm3
 import pysm3.units as u
+from .mixingmatrix import MixingMatrix
+from .component_model import Dust, Synchrotron
 from cmbdb import cmbdb
 
 
@@ -163,6 +165,100 @@ def get_observation(instrument='', sky=None,
 
     return res
 
+def get_observation_alm(instrument='d0s0', sky=None,
+                    noise=False, nside=None, lmax=None, mmax = None, unit='uK_CMB'):
+    """ Get a pre-defined instrumental configuration
+
+    Parameters
+    ----------
+    instrument:
+        It can be either a `str` (see :func:`get_instrument`) or an
+        object that provides the following as a key or an attribute.
+
+        - **frequency** (required)
+        - **depth_p** (required if ``noise=True``)
+        - **depth_i** (required if ``noise=True``)
+
+        They can be anything that is convertible to a float numpy array.
+        If only one of ``depth_p`` or ``depth_i`` is provided, the other is
+        inferred assuming that the former is sqrt(2) higher than the latter.
+    sky: str of pysm3.Sky
+        Sky to observe. It can be a `pysm3.Sky` or a tag to create one.
+    noise: bool
+        If true, add Gaussian, uncorrelated, isotropic noise.
+    nside: int
+        Desired output healpix nside. It is optional if `sky` is a `pysm3.Sky`,
+        and required if it is a `str` or ``None``.
+    unit: str
+        Unit of the output. Only K_CMB and K_RJ (and multiples) are supported.
+
+    Returns
+    -------
+    observation: array
+        Shape is ``(n_freq, 3, n_pix)``
+    """
+    if isinstance(instrument, str):
+        instrument = get_instrument(instrument)
+    else:
+        instrument = standardize_instrument(instrument)
+    if nside is None:
+        nside = sky.nside
+    elif not isinstance(sky, str):
+        try:
+            assert nside == sky.nside, (
+                "Mismatch between the value of the nside of the pysm3.Sky "
+                "argument and the one passed in the nside argument.")
+        except AttributeError:
+            raise ValueError("Either provide a pysm3.Sky as sky argument "
+                             " or specify the nside argument.")
+    if lmax is None:
+        lmax = 3 * nside - 1
+    if mmax is None:
+        mmax = lmax
+    else:
+        assert mmax <= lmax, ("Value of mmax must be smaller than lmax (3*nside - 1 by default)")
+
+
+    if noise:
+        noise_maps = get_noise_realization(nside, instrument, unit)
+        res_alm = np.array([hp.map2alm(noise_map, lmax=lmax, mmax=mmax) for noise_map in noise_maps])
+    else:
+        res_alm = np.zeros((len(instrument.frequency), 3, hp.Alm.getsize(lmax, mmax)), dtype=np.complex128)
+
+    if sky is None or sky == '':
+        return res_alm
+
+    if isinstance(sky, str):
+        sky = get_sky(nside, sky)
+
+    ref_map = np.zeros((3, hp.nside2npix(nside)))
+    ref_map[0] =  sky.components[0].I_ref.to(getattr(u, unit), equivalencies=u.cmb_equivalencies(sky.components[0].freq_ref_I))
+    ref_map[1] =  sky.components[0].Q_ref.to(getattr(u, unit), equivalencies=u.cmb_equivalencies(sky.components[0].freq_ref_P))
+    ref_map[2] =  sky.components[0].U_ref.to(getattr(u, unit), equivalencies=u.cmb_equivalencies(sky.components[0].freq_ref_P))
+    ref_alm = hp.map2alm(ref_map, lmax = lmax, mmax = mmax)
+
+    DustI_evaluator = MixingMatrix(Dust(sky.components[0].freq_ref_I.value))
+    DustP_evaluator = MixingMatrix(Dust(sky.components[0].freq_ref_P.value))
+    factor_I = DustI_evaluator.eval(instrument.frequency, float(sky.components[0].mbb_index), float(sky.components[0].mbb_temperature.value))
+    factor_P = DustP_evaluator.eval(instrument.frequency, float(sky.components[0].mbb_index), float(sky.components[0].mbb_temperature.value))
+    for n, res_freq in enumerate(res_alm):
+        res_freq[0] += ref_alm[0] * factor_I[n]
+        res_freq[1:] += ref_alm[1:] * factor_P[n]
+
+    ref_map[0] =  sky.components[1].I_ref.to(getattr(u, unit), equivalencies=u.cmb_equivalencies(sky.components[1].freq_ref_I))
+    ref_map[1] =  sky.components[1].Q_ref.to(getattr(u, unit), equivalencies=u.cmb_equivalencies(sky.components[1].freq_ref_P))
+    ref_map[2] =  sky.components[1].U_ref.to(getattr(u, unit), equivalencies=u.cmb_equivalencies(sky.components[1].freq_ref_P))
+    ref_alm = hp.map2alm(ref_map, lmax = lmax, mmax = mmax)
+    
+    SynchrotronI_evaluator = MixingMatrix(Synchrotron(sky.components[1].freq_ref_I.value))
+    SynchrotronP_evaluator = MixingMatrix(Synchrotron(sky.components[1].freq_ref_P.value))
+    factor_I = SynchrotronI_evaluator.eval(instrument.frequency, float(sky.components[1].pl_index))
+    factor_P = SynchrotronP_evaluator.eval(instrument.frequency, float(sky.components[1].pl_index))
+    for n, res_freq in enumerate(res_alm):
+        res_freq[0] += ref_alm[0] * factor_I[n]
+        res_freq[1:] += ref_alm[1:] * factor_P[n]
+
+    return res_alm
 
 def get_noise_realization(nside, instrument, unit='uK_CMB'):
     """ Generate noise maps for the instrument
