@@ -26,6 +26,7 @@ import healpy as hp
 from . import algebra as alg
 from .mixingmatrix import MixingMatrix
 from .observation_helpers import standardize_instrument
+from .cosmology import harmonic_noise_cov
 
 
 __all__ = [
@@ -406,6 +407,271 @@ def harmonic_comp_sep(components, instrument, data, nside, lmax, invN=None, mask
 
     return res
 
+#Added by Wang
+def multi_harmonic_comp_sep(components, instrument, data, nside, nside_patch, lmax, invN=None, mask=None, noiseless=False, **minimize_kwargs):
+
+    # Component separation
+    if nside_patch:
+        patch_ids = hp.ud_grade(np.arange(hp.nside2npix(nside_patch)), nside)
+        max_id = patch_ids.max()
+
+    res = OptimizeResult()
+    # res.patch_res = [harmonic_comp_sep(components, instrument, np.array([hp.map2alm(maps, lmax = lmax) for maps in data * (patch_ids == patch_id)]), nside, lmax, invN=invN, mask=mask, noiseless=noiseless, **minimize_kwargs) for patch_id in range(max_id+1)]
+    res.patch_res = [harmonic_comp_sep(components, instrument, data * (patch_ids == patch_id), nside, lmax, invN=invN, mask=mask, noiseless=noiseless, **minimize_kwargs) for patch_id in range(max_id+1)]
+    return res
+
+def harmonic_comp_sep_fsl(components, instrument, data, bls_fsl, nfix = 0, bls_main = None, lmax = None, invNl=None, nside=None, 
+                    only = None, sigma_alpha = None, mean = None,**minimize_kwargs):
+    """
+    beam_main and beam_fsl should have shape *(n_fre, ..., n_lm)*
+        *...* can be
+
+        - absent or 1: same bl for temperature and polarization
+        - 2: temperature and polarization bl respectively
+    """
+    instrument = standardize_instrument(instrument)
+    #lmax = 3 * nside - 1
+
+ 
+    if lmax is None:
+        lmax = min(hp.Alm.getlmax(data.shape[-1]), bls_main.shape[-1] - 1, bls_fsl.shape[-1] - 1)
+    
+    bls_fsl = bls_fsl[..., :lmax + 1]    
+    bls_main = bls_main[..., :lmax + 1]
+
+
+#TODO add a truncate alms
+#    alms = _truncate_alm(alms, lmax=lmax)      
+    
+    # extend invNl to invNlm
+    ell_em = hp.Alm.getlm(lmax, np.arange(data.shape[-1]))[0]
+    ell_em = np.stack((ell_em, ell_em), axis=-1).reshape(-1)
+    if invNl is not None:
+        # For transformation into real alms
+        invNl = np.array([[np.diag(invNl[:,st,l]) for st in np.arange(invNl.shape[1])] for l in np.arange(invNl.shape[2])])
+        invNlm = np.array([invNl[l,:,:,:] for l in ell_em])
+    else:
+        try:
+            invNl = harmonic_noise_cov(instrument, lmax)
+            invNl = np.array([[np.diag(invNl[:,st,l]) for st in np.arange(invNl.shape[1])] for l in np.arange(invNl.shape[2])])            
+            invNlm = np.array([invNl[l,:,:,:] for l in ell_em]) 
+            # prewhiten_factors = _get_prewhiten_factors(instrument, bls_main.shape, nside) 
+            # invNl = np.zeros(prewhiten_factors.shape+prewhiten_factors.shape[-1:]) #
+            # np.einsum('...ii->...i', invNl)[:] = prewhiten_factors**2
+            # invNl = np.repeat(invNl[np.newaxis,:], lmax+1, axis = 0)
+            # invNlm = np.array([invNl[l,:,:,:] for l in ell_em]) 
+        except:
+            print("fail to read invNl from instrument, use None instead")
+            invNlm = None
+
+    #format alms and bls
+    cl_in = np.array([hp.alm2cl(alm) for alm in data])
+    alms = _format_alms(data)
+    bls_fsl = _format_bls(bls_fsl)
+    bls_main = _format_bls(bls_main)
+        
+    print('Computing alms')
+
+    # read dipole T
+    if len(bls_fsl.shape) < 3 or bls_fsl.shape[1] == 1:
+        b1_t_main = bls_main[3,:]
+        b1_t_fsl = bls_fsl[3,:]
+    elif bls_fsl.shape[1] == 2:
+        #TODO maybe a better way
+        b1_t_main = np.ones((3,bls_fsl.shape[-1]))
+        b1_t_fsl = np.zeros((3,bls_fsl.shape[-1]))
+        print("dipole is not corrected (no T input)")
+    elif bls_fsl.shape[1] == 3:
+        b1_t_main = bls_main[3, 0, :]
+        b1_t_fsl = bls_fsl[3, 0, :]
+    else:
+        raise ValueError(bls_fsl.shape)
+
+    if only == "B":
+        bls_main_input = bls_main[..., -1:, :]
+        bls_fsl_input = bls_fsl[..., -1:, :]
+        alms_input = alms[..., -1:, :]
+        if invNlm is not None:
+            invNlm_input = invNlm[...,-1:, :,:]
+        else:
+            invNlm_input = None
+
+    elif only == "E":
+        bls_main_input = bls_main[..., -2:-1, :]
+        bls_fsl_input = bls_fsl[..., -2:-1, :]
+        alms_input = alms[..., -2:-1, :]
+        if invNlm is not None:
+            invNlm_input = invNlm[..., -2:-1, :,:]
+        else:
+            invNlm_input = None
+
+    elif only == "T":
+        bls_main_input = bls_main[..., 0:1, :]
+        bls_fsl_input = bls_fsl[..., 0:1, :]
+        alms_input = alms[..., 0:1, :]
+        if invNlm is not None:
+            invNlm_input = invNlm[..., 0:1, :,:]
+        else:
+            invNlm_input = None   
+    elif only == "P":
+        bls_main_input = bls_main[..., -2:, :]
+        bls_fsl_input = bls_fsl[..., -2:, :]
+        alms_input = alms[..., -2:, :]
+        if invNlm is not None:
+            invNlm_input = invNlm[..., -2:, :,:]
+        else:
+            invNlm_input = None
+
+    else:
+        bls_main_input = bls_main * 1.
+        bls_fsl_input = bls_fsl * 1.
+        alms_input = alms *1.
+        if invNlm is not None:
+            invNlm_input = invNlm * 1.
+        else:
+            invNlm_input = None  
+
+    # A_ev, A_dB_ev, comp_of_param, x0, params = _A_evaluator(components, instrument)
+    # if not len(x0):
+    #     A_ev = A_ev()
+
+    # # add bl
+    # # create a new variable as alpha here
+    # x0 = np.append(1*np.ones(alms.shape[-1] - nfix), x0)
+    # def A_tilde_ev(x):
+    #     # Temperature dipole calibration factor
+    #     x = np.append(np.ones(nfix),x)
+    #     dipole_factors = (b1_t_main + b1_t_fsl) / (b1_t_main + b1_t_fsl*x[:alms_input.shape[-1]])
+    #     B = (bls_main_input + bls_fsl_input * x[:alms_input.shape[-1]]) * dipole_factors
+    #     A = A_ev(x[alms_input.shape[-1]:])
+    #     return np.einsum('...i,...ik->...ik', B, A, optimize=False)
+    # # Component separation
+    # def A_tilde_dB_ev(x):
+    #     A_tiled_dB = []
+    #     # Temperature dipole calibration factor
+    #     x = np.append(np.ones(nfix),x)
+    #     dipole_factors = (b1_t_main + b1_t_fsl) / (b1_t_main + b1_t_fsl*x[:alms_input.shape[-1]])
+    #     B = (bls_main_input + bls_fsl_input * x[:alms_input.shape[-1]]) * dipole_factors
+    #     A = A_ev(x[alms_input.shape[-1]:])
+    #     for i in range(nfix, alms_input.shape[-1]):
+    #         # the derivative of alphas
+    #         B_dA = np.zeros_like(B)
+    #         B_dA[..., i] = (bls_fsl_input[..., i] * dipole_factors[i] - B[...,i] * b1_t_fsl[i])/dipole_factors[i]**2 * b1_t_fsl[i]
+    #         A_tiled_dB += [np.einsum('...i,...ik->...ik', B_dA, A, optimize=False)]
+    #     # derivative of betas
+    #     A_tiled_dB += [np.einsum('...i,...ik->...ik', B, A_db, optimize=False) for A_db in A_dB_ev(x[alms_input.shape[-1]:])]
+    #     return A_tiled_dB
+
+    # comp_of_param_tilde = [list(range(len(components)))] * (alms_input.shape[-1] - nfix) + comp_of_param
+
+
+#    res = alg.comp_sep(A_ev, alms, invNlm, A_dB_ev, comp_of_param, x0, **minimize_kwargs)
+    A_tilde_ev,  A_tilde_dB_ev, _, comp_of_param_tilde, x0, params = _get_modified_A(components, instrument, bls_main_input, bls_fsl_input, b1_t_main, b1_t_fsl, nfix)
+    if sigma_alpha is None:
+        inv_sigma_alpha = None
+    else:
+        inv_sigma_alpha = np.pad(1./sigma_alpha,(0, len(x0)-len(sigma_alpha)),'constant', constant_values=(0,0))
+
+
+    # return A_tilde_ev, A_tilde_dB_ev, comp_of_param_tilde
+    # res = alg.comp_sep(A_tilde_ev, alms_input, invNlm_input, A_tilde_dB_ev, comp_of_param_tilde, x0, inv_sigma = inv_sigma_alpha, mean = mean, **minimize_kwargs)
+    res = alg.comp_sep(A_tilde_ev, alms_input, invNlm_input, A_tilde_dB_ev, comp_of_param_tilde, x0, **minimize_kwargs)
+    # res = alg.comp_sep(A_tilde_ev, alms_input, None, None, np.tile(comp_of_param,(3,1)), x0, **minimize_kwargs)
+
+
+    # Craft output
+    # 1) Apply the mask, if any
+    # 2) Restore the ordering of the input data (pixel dimension last)
+    res.params = params
+    res.s = np.swapaxes(res.s, 0, 2)
+    res.s[res.s == hp.UNSEEN] = 0.
+    # res.s = np.asarray(res.s, order='C').view(np.complex128)
+    res.s = _r_to_c_alms(res.s)
+    cl_out = np.array([hp.alm2cl(alm) for alm in res.s])
+    res.cl_in = cl_in
+    res.cl_out = cl_out
+    res.chi = res.chi.T
+    if 'chi_dB' in res:
+        for i in range(len(res.chi_dB)):
+            res.chi_dB[i] = res.chi_dB[i].T
+
+    # if nside and len(x0):
+    #     res.x = res.x.T
+    #     res.Sigma = res.Sigma.T
+
+    return res
+
+def _get_modified_A(components, instrument, bls_main, bls_fsl, b1_t_main, b1_t_fsl, nfix):
+    A_ev, A_dB_ev, comp_of_param, x0, params = _A_evaluator(components, instrument)
+    n_freq = instrument.fwhm.size
+    if not len(x0):
+        A_ev = A_ev()
+    x0 = np.append(1*np.ones(n_freq - nfix), x0)
+    dipole_factors = b1_t_main + b1_t_fsl
+    def A_tilde_ev(x):
+        # Temperature dipole calibration factor
+        x = np.append(np.ones(nfix),x)
+        B = (bls_main + bls_fsl * x[:n_freq]) / (b1_t_main + b1_t_fsl*x[:n_freq]) * dipole_factors
+        A = A_ev(x[n_freq:])
+        return np.einsum('...i,...ik->...ik', B, A, optimize=False)
+    # Component separation
+
+    def A_tilde_dB_ev(x):
+        A_tilde_dB = []
+        # Temperature dipole calibration factor
+        x = np.append(np.ones(nfix),x)
+        B = (bls_main + bls_fsl * x[:n_freq]) / (b1_t_main + b1_t_fsl*x[:n_freq]) * dipole_factors
+        A = A_ev(x[n_freq:])
+        for i in range(nfix, n_freq):
+            # the derivative of alphas
+            B_dA = np.zeros_like(bls_main)
+            B_dA[..., i] = (bls_fsl[..., i] * b1_t_main[i] - bls_main[...,i] * b1_t_fsl[i]) /  (b1_t_main[i] + b1_t_fsl[i]*x[i])**2   *dipole_factors[i]
+            A_tilde_dB += [np.einsum('...i,...ik->...ik', B_dA, A, optimize=False)]
+        # derivative of betas
+        
+        A_tilde_dB += [np.einsum('...i,...ik->...ik', B, A_db, optimize=False) for A_db in A_dB_ev(x[n_freq:])]
+        return A_tilde_dB
+
+    comp_of_param_tilde = [slice(len(components))] * (n_freq - nfix) + comp_of_param
+    return A_tilde_ev,  A_tilde_dB_ev,  comp_of_param_tilde, x0, params
+
+def _get_modified_A_dBdB(components, instrument, bls_main, bls_fsl, b1_t_main, b1_t_fsl, nfix):
+    A_ev, A_dB_ev, comp_of_param, x0, params = _A_evaluator(components, instrument)
+    A = MixingMatrix(*components)
+    A_dBdB_ev = A.diff_diff_evaluator(instrument.frequency)
+    n_freq = instrument.fwhm.size
+    if not len(x0):
+        A_ev = A_ev()
+    x0 = np.append(1*np.ones(n_freq - nfix), x0)
+    dipole_factors = b1_t_main + b1_t_fsl
+    def A_tilde_dBdB_ev(x):
+        n_param = len(x)
+        A_tilde_dBdB = [[np.zeros((1,1)) for i in range(n_param)] for i in range(n_param)]
+        # Temperature dipole calibration factor
+        x = np.append(np.ones(nfix),x)
+        B = (bls_main + bls_fsl * x[:n_freq]) / (b1_t_main + b1_t_fsl*x[:n_freq]) * dipole_factors
+        A = A_ev(x[n_freq:])
+        
+        for i in range(nfix, n_freq):
+            # the derivative of alphas, alphas
+            B_dAdA = np.zeros_like(bls_main)
+            B_dAdA[..., i] = -2 * b1_t_fsl[i] * (bls_fsl[..., i] * b1_t_main[i] - bls_main[...,i] * b1_t_fsl[i]) /  (b1_t_main[i] + b1_t_fsl[i]*x[i])**3   *dipole_factors[i]
+            A_tilde_dBdB[i-nfix][i-nfix] = np.einsum('...i,...ik->...ik', B_dAdA, A, optimize=False)
+        # derivative of beta, alpha
+        for i in range(nfix, n_freq):
+            for j in range(len(x)-n_freq):
+                B_dA = np.zeros_like(bls_main)
+                B_dA[..., i] = (bls_fsl[..., i] * b1_t_main[i] - bls_main[...,i] * b1_t_fsl[i]) /  (b1_t_main[i] + b1_t_fsl[i]*x[i])**2   *dipole_factors[i]
+                A_tilde_dBdB[i-nfix][n_freq-nfix+j] = np.einsum('...i,...ik->...ik', B_dA, A_dB_ev(x[n_freq:])[j], optimize=False)
+                A_tilde_dBdB[n_freq-nfix+j][i-nfix] = A_tilde_dBdB[i-nfix][n_freq-nfix+j]
+
+        # derivative of beta, beta
+        for i in range(len(x)-n_freq):
+            for j in range(len(x)-n_freq):
+                A_tilde_dBdB[n_freq-nfix+j][n_freq-nfix+j] = np.einsum('...i,...ik->...ik', B, A_dBdB_ev(x[n_freq:])[i][j], optimize=False)
+
+        return A_tilde_dBdB
+    return A_tilde_dBdB_ev
 
 def adaptive_comp_sep(components, instrument, data, patch_ids,
                       **minimize_kwargs):
@@ -662,6 +928,19 @@ def _r_to_c_alms(alms):
 
     return alms
 
+#modified by Wang
+#Format bls to the same format as alms
+def _format_bls(bls, lmin=0):
+
+    lmax = bls.shape[-1] - 1
+    bls = np.asarray(bls, order='C')
+    el = hp.Alm.getlm(lmax)[0]
+    el = np.repeat(el, 2)
+    res = np.zeros(bls.shape[:-1] + el.shape)
+    for i in range(el.size):
+        res[...,i] = bls[..., el[i]]
+    res = np.swapaxes(res, 0, -1)
+    return res
 
 def _harmonic_ilc_alm(components, instrument, alms, lbins=None, fsky=None):
     cl_in = np.array([hp.alm2cl(alm) for alm in alms])
