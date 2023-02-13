@@ -1066,6 +1066,7 @@ def comp_sep(A_ev, d, invN, A_dB_ev, comp_of_dB, *minimize_args, N_true=None, A_
         A_dBdB_last = None
 
     res.s = _Wd_svd(u_e_v_last[0], pw_d[0])
+    res.s = np.nan_to_num(res.s) # This is to fix output for l=0,l=1 to be nan, need to further investigate the value.
     res.invAtNA = _invAtNA_svd(u_e_v_last[0])
     res.chi = pw_d[0] - _As_svd(u_e_v_last[0], res.s)
     
@@ -1095,9 +1096,9 @@ def comp_sep(A_ev, d, invN, A_dB_ev, comp_of_dB, *minimize_args, N_true=None, A_
             As_dB = (_mv(A_dB_i, res.s[comp_of_dB_i])
                      for A_dB_i, comp_of_dB_i in zip(A_dB_last[0], comp_of_dB))
             res.chi_dB = []
-            for comp_of_dB_i, As_dB_i in zip(comp_of_dB, As_dB):
-                res.chi_dB.append(np.sum(res.chi * As_dB_i, -1)
-                                  / np.linalg.norm(As_dB_i, axis=-1))
+            # for comp_of_dB_i, As_dB_i in zip(comp_of_dB, As_dB): # TODO: somthing wrong, should be fixed
+            #     res.chi_dB.append(np.sum(res.chi * As_dB_i, -1)
+            #                       / np.linalg.norm(As_dB_i, axis=-1))
         try:
             res.Sigma = np.linalg.inv(fisher)
         except np.linalg.LinAlgError:

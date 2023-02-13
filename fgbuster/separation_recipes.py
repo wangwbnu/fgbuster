@@ -26,8 +26,6 @@ import healpy as hp
 from . import algebra as alg
 from .mixingmatrix import MixingMatrix
 from .observation_helpers import standardize_instrument
-from .cosmology import harmonic_noise_cov
-
 
 __all__ = [
     'basic_comp_sep',
@@ -36,6 +34,7 @@ __all__ = [
     'harmonic_ilc',
     'harmonic_ilc_alm',
     'harmonic_comp_sep',
+    'harmonic_comp_sep_fsl',
     'adaptive_comp_sep',
     'multi_res_comp_sep',
 ]
@@ -451,18 +450,7 @@ def harmonic_comp_sep_fsl(components, instrument, data, bls_fsl, nfix = 0, bls_m
         invNl = np.array([[np.diag(invNl[:,st,l]) for st in np.arange(invNl.shape[1])] for l in np.arange(invNl.shape[2])])
         invNlm = np.array([invNl[l,:,:,:] for l in ell_em])
     else:
-        try:
-            invNl = harmonic_noise_cov(instrument, lmax)
-            invNl = np.array([[np.diag(invNl[:,st,l]) for st in np.arange(invNl.shape[1])] for l in np.arange(invNl.shape[2])])            
-            invNlm = np.array([invNl[l,:,:,:] for l in ell_em]) 
-            # prewhiten_factors = _get_prewhiten_factors(instrument, bls_main.shape, nside) 
-            # invNl = np.zeros(prewhiten_factors.shape+prewhiten_factors.shape[-1:]) #
-            # np.einsum('...ii->...i', invNl)[:] = prewhiten_factors**2
-            # invNl = np.repeat(invNl[np.newaxis,:], lmax+1, axis = 0)
-            # invNlm = np.array([invNl[l,:,:,:] for l in ell_em]) 
-        except:
-            print("fail to read invNl from instrument, use None instead")
-            invNlm = None
+        invNlm = None
 
     #format alms and bls
     cl_in = np.array([hp.alm2cl(alm) for alm in data])
@@ -566,7 +554,7 @@ def harmonic_comp_sep_fsl(components, instrument, data, bls_fsl, nfix = 0, bls_m
 
 
 #    res = alg.comp_sep(A_ev, alms, invNlm, A_dB_ev, comp_of_param, x0, **minimize_kwargs)
-    A_tilde_ev,  A_tilde_dB_ev, _, comp_of_param_tilde, x0, params = _get_modified_A(components, instrument, bls_main_input, bls_fsl_input, b1_t_main, b1_t_fsl, nfix)
+    A_tilde_ev,  A_tilde_dB_ev,  comp_of_param_tilde, x0, params = _get_modified_A(components, instrument, bls_main_input, bls_fsl_input, b1_t_main, b1_t_fsl, nfix)
     if sigma_alpha is None:
         inv_sigma_alpha = None
     else:
