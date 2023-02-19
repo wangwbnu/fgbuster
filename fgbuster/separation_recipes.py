@@ -662,7 +662,7 @@ def _get_modified_A_dBdB(components, instrument, bls_main, bls_fsl, b1_t_main, b
         return A_tilde_dBdB
     return A_tilde_dBdB_ev
 
-def harmonic_comp_sep_fsl(components, instrument, data, bls_fsl, nfix = 0, bls_main = None, lmax = None, invNl=None, nside=None, 
+def harmonic_comp_sep_fsl_likelihood(components, instrument, data, bls_fsl, nfix = 0, bls_main = None, lmax = None, invNl=None, nside=None, 
                     only = None, sigma_alpha = None, mean = None,**minimize_kwargs):
     """
     beam_main and beam_fsl should have shape *(n_fre, ..., n_lm)*
