@@ -1107,6 +1107,103 @@ def comp_sep(A_ev, d, invN, A_dB_ev, comp_of_dB, *minimize_args, N_true=None, A_
 
     return res
 
+def comp_sep_likelihood(A_ev, d, invN, A_dB_ev, comp_of_dB, *minimize_args, N_true=None, A_dBdB_ev=None, **minimize_kwargs):
+    """ Perform component separation
+
+    Build the (inverse) spectral likelihood and minimize it to estimate the
+    parameters of the mixing matrix. Separate the components using the best-fit
+    mixing matrix.
+
+    Parameters
+    ----------
+    A_ev : function
+        The evaluator of the mixing matrix. It takes a float or an array as
+        argument and returns the mixing matrix, a ndarray with shape
+        *(..., n_freq, n_comp)*
+    d: ndarray
+        The data vector. Shape *(..., n_freq)*.
+    invN: ndarray or None
+        The inverse noise matrix. Shape *(..., n_freq, n_freq)*.
+    A_dB_ev : function
+        The evaluator of the derivative of the mixing matrix.
+        It returns a list, each entry is the derivative with respect to a
+        different parameter.
+    comp_of_dB: tuple or list of tuples
+        It allows to provide as output of *A_dB_ev* only the non-zero columns
+        *A*. If list, every entry refers to a parameter.
+        Tuple(s) can have lenght 1 or 2. The first element is the index
+        (or slice) of the component dimension of A (the last one) that is
+        affected by the derivative: ``A_dB_ev(x)[i]`` is assumed to be the
+        derivative of ``A[..., comp_of_dB[i]]``. The second element of the
+        touple, if present, is an array of integers. It can be used to specify
+        that the same parameter is actually fitted for indpendentely on
+        different sections of the *...* dimension(s). The index identifying
+        these regions are collected in the array.
+    minimize_args: list
+        Positional arguments to be passed to `scipy.optimize.minimize`.
+        At this moment it just contains *x0*, the initial guess for the spectral
+        parameters
+    minimize_kwargs: dict
+        Keyword arguments to be passed to `scipy.optimize.minimize`.
+        A good choice for most cases is
+        ``minimize_kwargs = {'tol': 1, options: {'disp': True}}``. *tol* depends
+        on both the solver and your signal to noise: it should ensure that the
+        difference between the best fit -logL and and the minimum is well less
+        then 1, without exagereting (a difference of 1e-4 is useless).
+        *disp* also triggers a verbose callback that monitors the convergence.
+
+    Returns
+    -------
+    result : scipy.optimze.OptimizeResult (dict)
+        Result of the spectral likelihood maximisation
+        It is the output of `scipy.optimize.minimize`, plus some extra.
+        It includes
+
+	- **x**: *(ndarray)* - the best-fit spectra indices
+        - **Sigma**: *(ndarray)* - the semi-analytic covariance of the best-fit
+          spectra indices patch.
+        - **s**: *(ndarray)* - Separated components, Shape *(..., n_comp)*
+        - **invAtNA** : *(ndarray)* - Covariance of the separated components.
+          Shape *(..., n_comp, n_comp)*
+
+    Note
+    ----
+    The *...* in the arguments denote any extra set of dimension. They have to
+    be compatible among different arguments in the `numpy` broadcasting sense.
+    """
+    # If mixing matrix is fixed, separate and return
+    if isinstance(A_ev, np.ndarray):
+        res = sp.optimize.OptimizeResult()
+        res.s, (u_e_v, L) = Wd(A_ev, d, invN, True)
+        res.invAtNA = _invAtNA_svd(u_e_v)
+        if L is not None:
+            d = _mtv(L, d)
+        res.chi = d - _As_svd(u_e_v, res.s)
+        return res
+    else:
+        # Mixing matrix has free paramters: check that x0 was provided
+        assert minimize_args
+        assert len(minimize_args[0])
+
+    # Check input
+    if A_dB_ev is not None:
+        A_dB_ev, comp_of_dB = _A_dB_ev_and_comp_of_dB_as_compatible_list(
+            A_dB_ev, comp_of_dB, minimize_args[0])
+    if 'options' in minimize_kwargs and 'disp' in minimize_kwargs['options']:
+        disp = minimize_kwargs['options']['disp']
+    else:
+        disp = False
+
+    # Prepare functions for minimize
+    #Modified by Clement Leloup
+    fun, jac, last_values = _build_bound_inv_logL_and_logL_dB(
+        A_ev, d, invN, A_dB_ev, comp_of_dB, N_true)
+    minimize_kwargs['jac'] = jac
+
+
+    return fun
+
+
 
 def multi_comp_sep(A_ev, d, invN, A_dB_ev, comp_of_dB, patch_ids,
                    *minimize_args, **minimize_kargs):
